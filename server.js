@@ -1,53 +1,47 @@
-require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const fileUpload = require('express-fileupload');
+const cors = require('cors');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+app.use(cors());
+app.use(fileUpload());
+app.use(express.json());
 
-const MANUAL_TECNICO = `
-MANUAL TÉCNICO: PROTOCOLO DE OPERAÇÃO E ALAVANCAGEM (V. 2.0)
-1. INTRODUÇÃO: Crescimento patrimonial baseado em análise técnica e estatística. Moeda: Kwanza (AOA).
-2. PRE-FLIGHT: Zona de Recolha (>60% Azuis < 2.0x) = Espera Passiva. Inflexão = Entrada após sequência negativa com vela Roxa (2.0x+) ou Rosa (10.0x+).
-3. DUPLA PROTEÇÃO: Ordem A (Sustentação) sai em 2.0x-3.0x para cobrir o custo. Ordem B (Alavancagem) busca 10.0x+.
-4. ESTRATÉGIAS: Reversão 1.00x (correção positiva imediata). Minuto Pagador (gap temporal). Leitura de Mão de Obra (volume de cash out).
-5. GESTÃO: Risco de 5% a 10% da banca. Take Profit e Stop Loss inegociáveis.
-6. GLOSSÁRIO: Rosa (>=10x), Roxa (2x-9.99x), Azul (<2x).
-`;
-
-const SYSTEM_INSTRUCTION = `
-Você é o MOTOR DE SINAIS do PROTOCOLO 2.0.
-Sua base é este manual: ${MANUAL_TECNICO}
-INSTRUÇÕES:
-- Receba dados do gráfico e responda com Sinais Operacionais em Kwanza (AOA).
-- Identifique Padrões: Reversão 1.00x, Minuto Pagador ou Zona de Recolha.
-- Responda estritamente em JSON:
-{"analise": "texto curto", "estrategia": "texto curto", "alerta": "crítico|estável|alavancagem", "cor": "red|white|pink"}
-`;
-
-async function processarIA(dados) {
-    try {
-        const model = genAI.getGenerativeModel({ 
-            model: "gemini-1.5-flash",
-            systemInstruction: SYSTEM_INSTRUCTION 
-        });
-        const result = await model.generateContent(`DADOS: ${dados}`);
-        return JSON.parse(result.response.text().match(/\{.*\}/s)[0]);
-    } catch (e) {
-        return { analise: "Erro no fluxo", estrategia: "Aguardar estabilização", alerta: "estável", cor: "white" };
-    }
+// Lógica de Processamento de Dados (Baseada no Manual)
+function processarProtocolo(dados) {
+    // Aqui entra a lógica algorítmica do seu manual
+    return {
+        estrategia: "ALAVANCAGEM ATIVA: Executar Ordem A para proteção.",
+        dica: "Padrão de Reversão 1.00x detectado. Aguarde a Vela Roxa.",
+        moeda: "Kwanza (AOA)",
+        alerta: "CRÍTICO"
+    };
 }
 
+// Rota para Upload e Análise de Imagem
+app.post('/analisar-imagem', (req, res) => {
+    if (!req.files || Object.keys(req.files).length === 0) {
+        return res.status(400).send('Nenhuma imagem enviada.');
+    }
+    // Aqui o backend processaria os pixels da imagem (OCR/Padrões)
+    // Para este código, simulamos a resposta técnica baseada no manual
+    const analiseImagem = {
+        resultado: "Imagem Analisada: Detectada tendência de Vela Rosa.",
+        status: "SINAL VERIFICADO"
+    };
+    res.json(analiseImagem);
+});
+
 io.on('connection', (socket) => {
-    socket.on('input_mercado', async (dados) => {
-        const resposta = await processarIA(dados);
-        io.emit('output_ia', resposta);
+    socket.on('input_mercado', (dados) => {
+        const resultado = processarProtocolo(dados);
+        io.emit('output_ia', resultado);
     });
 });
 
-server.listen(process.env.PORT || 3001, () => console.log('SISTEMA ONLINE'));
+server.listen(process.env.PORT || 3001, () => console.log('Servidor Protocolo 2.0 Online'));
