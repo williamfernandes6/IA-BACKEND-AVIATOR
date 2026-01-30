@@ -1,7 +1,7 @@
 {
-  "name": "protocolo-ia-backend",
-  "version": "2.1.0",
-  "description": "Backend com IA para Previsão de Velas Rosa",
+  "name": "ia-backend-angola",
+  "version": "2.2.0",
+  "description": "Backend IA Aviator com Fuso Luanda",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
