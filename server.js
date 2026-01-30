@@ -1,7 +1,7 @@
 const express = require('express');
 const multer = require('multer');
-const tesseract = require('node-tesseract-ocr');
 const cors = require('cors');
+const Tesseract = require('tesseract.js');
 
 const app = express();
 app.use(cors());
@@ -9,46 +9,92 @@ app.use(express.json());
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-const config = { lang: "eng", oem: 1, psm: 3 };
+/**
+ * --- LÓGICA DE ANÁLISE REFORÇADA (MANUAL V2.0) ---
+ * Bloqueia se houver 3, 5 ou mais velas azuis (< 2.00x) seguidas
+ * ou se houver ganchos (1.0x - 1.1x).
+ */
+function calcularSinal(numeros) {
+    if (numeros.length === 0) return { status: "AGUARDANDO DADOS", tendencia: "baixa" };
+
+    // 1. Contagem de Azuis Seguidas (Velas abaixo de 2.00x)
+    let azuisSeguidas = 0;
+    for (let i = 0; i < numeros.length; i++) {
+        if (numeros[i] < 2.00) azuisSeguidas++;
+        else break; // Para de contar assim que encontra uma roxa/rosa
+    }
+
+    // 2. Regra do Gancho (Velas extremamente baixas nas últimas 3)
+    const ultimas3 = numeros.slice(0, 3);
+    const temGancho = ultimas3.some(n => n <= 1.10);
+
+    // CRITÉRIO DE BLOQUEIO (MANUAL: MÍNIMO 3 AZUIS OU GANCHO)
+    if (azuisSeguidas >= 3 || temGancho) {
+        return {
+            status: "AGUARDANDO: RECOLHA",
+            cor: "#ef4444",
+            dica: `Alerta: ${azuisSeguidas} velas azuis seguidas. Gráfico em retenção severa.`,
+            minX: "---", maxX: "---", pct: "28%",
+            gestao: "ZONA MORTA",
+            timerRosa: "BLOQUEADO",
+            tendencia: "recolha"
+        };
+    }
+
+    // CRITÉRIO DE ENTRADA (MOMENTO PAGADOR)
+    return {
+        status: "PAGO: MOMENTO DE LUCRAR",
+        cor: "#22c55e",
+        dica: "Gap de pagamento identificado. Ciclo de recuperação iniciado.",
+        minX: "2.00x", maxX: "12.00x", pct: "98%",
+        gestao: "SOROS NÍVEL 1",
+        timerRosa: "PAGANDO",
+        tendencia: "pagador"
+    };
+}
 
 app.post('/analisar-fluxo', upload.single('print'), async (req, res) => {
     try {
-        const text = await tesseract.recognize(req.file.buffer, config);
-        const regexNumeros = /(\d+\.\d{2})/g;
-        let encontrados = text.match(regexNumeros) || [];
-        let numeros = encontrados.map(n => parseFloat(n)).filter(n => n < 500000);
+        if (!req.file) return res.status(400).json({ error: "Sem imagem" });
 
-        // IDENTIFICADOR DE BANCA: O maior valor é o saldo
-        let bancaDetectada = numeros.length > 0 ? Math.max(...numeros) : 0;
-        let historicoReal = numeros.filter(n => n !== bancaDetectada).slice(0, 25);
+        const { data: { text } } = await Tesseract.recognize(req.file.buffer, 'eng');
+        
+        // 1. IDENTIFICADOR DE BANCA AO/AOA
+        // Procura valores monetários que tenham "AO", "AOA" ou "Kz" por perto
+        const regexBanca = /(?:AO|AOA|Kz|KZ)\s?([\d\.,]{3,12})/i;
+        const matchBanca = text.match(regexBanca);
+        let bancaFinal = 0;
 
-        // MANUAL V2.0: Proteção contra Gancho (1.00x - 1.10x)
-        const ultimas = historicoReal.slice(0, 3);
-        const temGancho = ultimas.some(v => v <= 1.10);
-
-        if (temGancho) {
-            res.json({
-                status: "AGUARDANDO: RECOLHA",
-                cor: "#ef4444",
-                dica: "Gancho detectado (1.0x). Gráfico em recuperação. Não entre!",
-                minX: "---", maxX: "---", pct: "35%",
-                banca: bancaDetectada,
-                timerRosa: "ANALISANDO",
-                historico: historicoReal
-            });
+        if (matchBanca) {
+            // Limpa pontos de milhar e troca vírgula por ponto para o sistema entender
+            bancaFinal = parseFloat(matchBanca[1].replace(/\./g, '').replace(',', '.'));
         } else {
-            res.json({
-                status: "PAGO: ENTRADA CONFIRMADA",
-                cor: "#22c55e",
-                dica: "Gap Temporal Aberto. Padrão de intercalação detectado.",
-                minX: "2.00x", maxX: "15.00x", pct: "98%",
-                banca: bancaDetectada,
-                timerRosa: "EM BREVE",
-                historico: historicoReal
-            });
+            // Se não achar o texto "AO", pega o maior número do print (Geralmente a banca)
+            const todosNumeros = text.replace(',', '.').match(/(\d+\.\d{2})/g) || [];
+            bancaFinal = todosNumeros.length > 0 ? Math.max(...todosNumeros.map(n => parseFloat(n))) : 0;
         }
-    } catch (error) { res.status(500).json({ error: "Erro OCR" }); }
+
+        // 2. EXTRAIR HISTÓRICO DE VELAS
+        const regexVelas = /(\d+[\.,]\d{2})/g;
+        let velasRaw = (text.replace(',', '.').match(regexVelas) || [])
+            .map(v => parseFloat(v))
+            .filter(v => v < 1000 && v !== bancaFinal); // Filtra a banca do histórico
+
+        const analise = calcularSinal(velasRaw);
+
+        res.json({
+            ...analise,
+            banca: bancaFinal,
+            historico: velasRaw.slice(0, 25)
+        });
+
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: "Erro no processamento IA" });
+    }
 });
 
+app.get('/ping', (req, res) => res.send("IA Elite Online"));
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor na porta ${PORT}`));
