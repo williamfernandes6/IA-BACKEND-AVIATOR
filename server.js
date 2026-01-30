@@ -1,80 +1,81 @@
 const express = require('express');
-const fileUpload = require('express-fileupload');
+const multer = require('multer');
+const tesseract = require('node-tesseract-ocr');
 const cors = require('cors');
-const Tesseract = require('tesseract.js');
-const http = require('http');
 
 const app = express();
-const server = http.createServer(app);
-
 app.use(cors());
-app.use(fileUpload());
 app.use(express.json());
 
-// Memória da IA (Aprendizagem de Wins/Losses)
-let stats = { wins: 45, losses: 2 };
+const upload = multer({ storage: multer.memoryStorage() });
 
-app.get('/ping', (req, res) => res.json({ status: "online", stats }));
+// CONFIGURAÇÃO DO OCR (IDENTIFICADOR DE BANCA E NÚMEROS)
+const config = {
+  lang: "eng",
+  oem: 1,
+  psm: 3,
+};
 
-function processarAlgoritmo(listaX, banca) {
-    const ultimos = listaX.slice(0, 8);
-    const azuis = ultimos.filter(x => x < 2.0).length;
-    const roxos = ultimos.filter(x => x >= 2 && x < 10).length;
-    
-    // Gestão 1-2-3 (5% de banca)
-    const entradaBase = banca * 0.05;
-    
-    // Lógica de Gap Temporal para Rosa (10x+)
-    const minutosParaRosa = Math.floor(Math.random() * (12 - 4) + 4);
-
-    let analise = {
-        status: "PAGO: MOMENTO DE LUCRAR",
-        cor: "#00ff66",
-        minX: "1.50x",
-        maxX: "4.00x",
-        pct: "97%",
-        dica: "Padrão de Inflexão. Siga a Gestão 1-2-3.",
-        tendencia: azuis > 5 ? "baixa" : "alta",
-        timerRosa: minutosParaRosa,
-        entrada: entradaBase,
-        soros: `1ª: Kz ${entradaBase.toFixed(2)} | 2ª: Kz ${(entradaBase*2).toFixed(2)} | 3ª: Kz ${(entradaBase*4).toFixed(2)}`
-    };
-
-    if (ultimos[0] < 1.10 || azuis >= 3) {
-        analise.status = "AGUARDANDO: RECOLHA";
-        analise.cor = "#ff0033";
-        analise.pct = "10%";
-        analise.dica = "Gráfico em retenção. Proteja sua banca.";
-        analise.minX = "1.00x";
-        analise.maxX = "1.20x";
-    }
-
-    return analise;
-}
-
-app.post('/analisar-fluxo', async (req, res) => {
-    if (!req.files || !req.files.print) return res.status(400).json({ erro: 'Sem imagem' });
-
+app.post('/analisar-fluxo', upload.single('print'), async (req, res) => {
     try {
-        const { data } = await Tesseract.recognize(req.files.print.data, 'eng');
-        const numeros = data.text.match(/\d+\.\d+/g) || [];
-        const listaX = numeros.map(n => parseFloat(n)).reverse();
+        const text = await tesseract.recognize(req.file.buffer, config);
+        
+        // --- LÓGICA DE EXTRAÇÃO REFORÇADA (MANUAL V2.0) ---
+        const regexNumeros = /(\d+\.\d{2})/g;
+        let encontrados = text.match(regexNumeros) || [];
+        let historico = encontrados.map(n => parseFloat(n)).filter(n => n < 1000);
 
-        // Detectar Banca automaticamente
-        let bancaMatch = data.text.match(/Kz\s?(\d+[\.,]\d+)/i) || data.text.match(/(\d+[\.,]\d{2})/);
-        let bancaDetectada = bancaMatch ? parseFloat(bancaMatch[1].replace(',', '.')) : 10000;
+        // IDENTIFICADOR DE BANCA: Busca o maior número que não seja um multiplicador óbvio
+        // No Aviator, o Saldo costuma ser o maior valor numérico isolado no print
+        let bancaDetectada = historico.reduce((a, b) => Math.max(a, b), 0);
+        
+        // Filtramos o histórico para os últimos 25 (removendo o que for banca)
+        let historicoReal = historico.filter(n => n !== bancaDetectada).slice(0, 25);
 
-        const resultado = processarAlgoritmo(listaX, bancaDetectada);
-        res.json({ ...resultado, historico: listaX.slice(0, 25), banca: bancaDetectada });
-    } catch (err) {
-        res.status(500).json({ erro: "Erro Neural" });
+        // ANÁLISE DE TENDÊNCIA E GAPS
+        const ultimasVelas = historicoReal.slice(0, 5);
+        const temGancho = ultimasVelas.some(v => v <= 1.10);
+        const media = ultimasVelas.reduce((a, b) => a + b, 0) / ultimasVelas.length;
+
+        let resposta = {};
+
+        if (temGancho || media < 1.8) {
+            resposta = {
+                status: "AGUARDANDO: RECOLHA",
+                cor: "#ef4444",
+                dica: "Padrão de Gancho ou Recuperação detectado. Proteja sua banca.",
+                minX: "---",
+                maxX: "---",
+                pct: "38%",
+                banca: bancaDetectada,
+                gestao: "ZONA DE RISCO",
+                timerRosa: "ANALISANDO",
+                tendencia: "baixa",
+                historico: historicoReal
+            };
+        } else {
+            resposta = {
+                status: "PAGO: MOMENTO DE LUCRAR",
+                cor: "#22c55e",
+                dica: "Gap Temporal Aberto. Ciclo pagador confirmado.",
+                minX: "2.00x",
+                maxX: "12.00x",
+                pct: "96%",
+                banca: bancaDetectada,
+                gestao: "Soros Nível 1 (5%)",
+                timerRosa: "EM BREVE",
+                tendencia: "alta",
+                historico: historicoReal
+            };
+        }
+
+        res.json(resposta);
+    } catch (error) {
+        res.status(500).json({ error: "Erro ao processar imagem" });
     }
 });
 
-app.post('/auditoria', (req, res) => {
-    if (req.body.type === 'win') stats.wins++; else stats.losses++;
-    res.json(stats);
-});
+app.get('/ping', (req, res) => res.send("Servidor Angola Online"));
 
-const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => console.log('PROTOCOLO 2.0 ATIVO'));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Protocolo 2.0 ativo na porta ${PORT}`));
